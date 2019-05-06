@@ -1,4 +1,7 @@
+// https://emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html#webgl-friendly-subset-of-opengl-es-2-0-3-0
+
 #include <EGL/egl.h>
+#include <GLES3/gl3.h>
 #include <fstream>
 #include <iostream>
 #include <stdio.h>
@@ -7,7 +10,7 @@
 #define STDOUT( text, ... ) printf( "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
 #define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
 
-bool initialize() {
+bool es_initialize() {
     // Obtain a handle to an EGLDisplay object by calling eglGetDisplay.
     EGLDisplay display = eglGetDisplay( EGL_DEFAULT_DISPLAY );
     if( EGL_NO_DISPLAY == display ) {
@@ -85,7 +88,7 @@ bool initialize() {
     return true;
 }
 
-// void cleanup() {
+// void es_cleanup() {
 //     // Free up the currently active rendering context by calling eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT).
 //     EGLBoolean eglMakeCurrent( EGLDisplay display,
 //                                EGLSurface draw,
@@ -120,7 +123,48 @@ bool get_file_contents( const char* filename, std::string& contents ) {
     return false;
 }
 
-bool load_shaders() {
+GLuint gles_load_shader( EGLenum type, const char* shaderSrc, const char* name ) {
+    GLuint shader;
+    GLint  compiled;
+
+    // Create the shader object
+    shader = glCreateShader( type );
+
+    if( shader == 0 )
+        return 0;
+
+    // Load the shader source
+    glShaderSource( shader, 1, &shaderSrc, NULL );
+
+    // Compile the shader
+    glCompileShader( shader );
+
+    // Check the compile status
+    glGetShaderiv( shader, GL_COMPILE_STATUS, &compiled );
+
+    if( !compiled ) {
+        GLint infoLen = 0;
+
+        glGetShaderiv( shader, GL_INFO_LOG_LENGTH, &infoLen );
+
+        if( infoLen > 1 ) {
+            char* infoLog = new char[infoLen];
+
+            glGetShaderInfoLog( shader, infoLen, NULL, infoLog );
+            STDERR( "Error compiling shader %s:\n%s\n", name, infoLog );
+            STDERR( "%s\n", shaderSrc );
+
+            delete[] infoLog;
+        }
+
+        glDeleteShader( shader );
+        return 0;
+    }
+
+    return shader;
+}
+
+bool gles_load_shaders() {
     std::string vert_glsl;
     if( !get_file_contents( "src_asset/stl.vert", vert_glsl ) ) {
         STDERR( "Failed to get vertex shader.\n" );
@@ -129,15 +173,50 @@ bool load_shaders() {
     STDOUT( "Got vertex shader.\n" );
 
     std::string frag_glsl;
-    if( !get_file_contents( "src_asset/stl.frag", vert_glsl ) ) {
+    if( !get_file_contents( "src_asset/stl.frag", frag_glsl ) ) {
         STDERR( "Failed to get fragment shader.\n" );
         return false;
     }
     STDOUT( "Got fragment shader.\n" );
 
+    // Load the vertex/fragment shaders
+    GLuint vertexShader = gles_load_shader( GL_VERTEX_SHADER, vert_glsl.c_str(), "vertex" );
+    if( !vertexShader ) {
+        STDERR( "Failed to compile vertex shader.\n" );
+        return false;
+    }
+    STDOUT( "Compiled vertex shader.\n" );
+
+    GLuint fragmentShader = gles_load_shader( GL_FRAGMENT_SHADER, frag_glsl.c_str(), "fragment" );
+    if( !fragmentShader ) {
+        STDERR( "Failed to compile fragment shader.\n" );
+        return false;
+    }
+    STDOUT( "Compiled fragment shader.\n" );
+
+    // Create the program object
+    GLuint programObject = glCreateProgram();
+
+    if( programObject == 0 ) {
+        return 0;
+    }
+
+    glAttachShader( programObject, vertexShader );
+    glAttachShader( programObject, fragmentShader );
+
+    // Bind vPosition to attribute 0
+    glBindAttribLocation( programObject, 0, "vPosition" );
+
+    // Link the program
+    glLinkProgram( programObject );
+
+    // Check the link status
+    GLint linked;
+    glGetProgramiv( programObject, GL_LINK_STATUS, &linked );
+
     return true;
 }
 
 int main() {
-    initialize() && load_shaders();
+    es_initialize() && gles_load_shaders();
 }
