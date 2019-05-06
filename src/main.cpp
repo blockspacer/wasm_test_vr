@@ -1,4 +1,6 @@
 #include <EGL/egl.h>
+#include <fstream>
+#include <iostream>
 #include <stdio.h>
 #include <vector>
 
@@ -74,7 +76,7 @@ bool initialize() {
     STDOUT( "Created EGL context.\n" );
 
     if( !eglMakeCurrent( display, surface, surface, context ) ) {
-        STDERR( "Failed to make  EGL context current with error 0x%x.\n", eglGetError() );
+        STDERR( "Failed to make EGL context current with error 0x%x.\n", eglGetError() );
         return false;
     }
     STDOUT( "Made EGL context current.\n" );
@@ -104,6 +106,38 @@ bool initialize() {
 //     // Delete the native rendering window. This step does not apply for Emscripten.
 // }
 
+bool get_file_contents( const char* filename, std::string& contents ) {
+    std::ifstream in( filename, std::ios::in | std::ios::binary );
+    if( in ) {
+        contents = std::string();
+        in.seekg( 0, std::ios::end );
+        contents.resize( in.tellg() );
+        in.seekg( 0, std::ios::beg );
+        in.read( &contents[0], contents.size() );
+        in.close();
+        return true;
+    }
+    return false;
+}
+
+bool load_shaders() {
+    std::string vert_glsl;
+    if( !get_file_contents( "src_asset/stl.vert", vert_glsl ) ) {
+        STDERR( "Failed to get vertex shader.\n" );
+        return false;
+    }
+    STDOUT( "Got vertex shader.\n" );
+
+    std::string frag_glsl;
+    if( !get_file_contents( "src_asset/stl.frag", vert_glsl ) ) {
+        STDERR( "Failed to get fragment shader.\n" );
+        return false;
+    }
+    STDOUT( "Got fragment shader.\n" );
+
+    return true;
+}
+
 int main() {
-    initialize();
+    initialize() && load_shaders();
 }
