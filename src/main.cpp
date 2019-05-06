@@ -1,94 +1,109 @@
+#include <EGL/egl.h>
 #include <stdio.h>
+#include <vector>
 
-#ifdef EMSCRIPTEN
-#include <emscripten.h>
-#endif
+#define STDOUT( text, ... ) printf( "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
+#define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
 
-#include "stl.h"
-
-#ifdef EMSCRIPTEN
-#define BASE_PATH "/indexdb/"
-#define EXPORT EMSCRIPTEN_KEEPALIVE
-#else
-#define BASE_PATH "./"
-#define EXPORT
-#endif
-
-extern "C" void EXPORT make_stl() {
-    using namespace io_stl;
-
-    float z = +0.0;
-    float p = +1.0;
-    float n = -1.0;
-
-    Point p0( n, n, n );
-    Point p1( n, n, p );
-    Point p2( n, p, n );
-    Point p3( n, p, p );
-    Point p4( p, n, n );
-    Point p5( p, n, p );
-    Point p6( p, p, n );
-    Point p7( p, p, p );
-
-    Point px( p, z, z );
-    Point nx( n, z, z );
-    Point py( z, p, z );
-    Point ny( z, n, z );
-    Point pz( z, z, p );
-    Point nz( z, z, n );
-
-    STL stl( {
-        // +X
-        Triangle( px, p4, p6, p7 ),
-        Triangle( px, p4, p7, p5 ),
-        // -X
-        Triangle( nx, p0, p1, p3 ),
-        Triangle( nx, p0, p3, p2 ),
-        // +Y
-        Triangle( py, p6, p2, p3 ),
-        Triangle( py, p6, p3, p7 ),
-        // -Y
-        Triangle( ny, p0, p4, p5 ),
-        Triangle( ny, p0, p5, p1 ),
-        // +Z
-        Triangle( pz, p1, p5, p7 ),
-        Triangle( pz, p1, p7, p3 ),
-        // -Z
-        Triangle( nz, p0, p2, p6 ),
-        Triangle( nz, p0, p6, p4 ),
-    } );
-    stl.SetTextHeader( "STL File" );
-
-    FILE* f = fopen( BASE_PATH "mycube.stl", "wb" );
-    if( f ) {
-        stl.WriteBinary( f );
-        fclose( f );
-
-#ifdef EMSCRIPTEN
-        EM_ASM(
-            FS.syncfs( false, function( err ) {
-                assert( !err );
-                console.log( "Synced /indexdb contents." );
-            } ); );
-#endif
-    } else {
-        fprintf( stderr, "Failed to open STL file for writing.\n" );
+bool initialize() {
+    // Obtain a handle to an EGLDisplay object by calling eglGetDisplay.
+    EGLDisplay display = eglGetDisplay( EGL_DEFAULT_DISPLAY );
+    if( EGL_NO_DISPLAY == display ) {
+        STDERR( "Failed to get display.\n" );
+        return false;
     }
+    STDOUT( "Got display %p.\n", display );
+
+    // Initialize EGL on that display by calling eglInitialize.
+    EGLint major;
+    EGLint minor;
+    if( !eglInitialize( display, &major, &minor ) ) {
+        STDERR( "Failed to initialize EGL.\n" );
+        return false;
+    }
+    STDOUT( "Initialized EGL %d.%d.\n", major, minor );
+
+    // Call eglGetConfigs and/or eglChooseConfig one or multiple times to find the EGLConfig that represents the desired main render target parameters.
+    // To examine the attributes of an EGLConfig, call eglGetConfigAttrib.
+    EGLint attrib_list_choose_config[] = {
+        EGL_RED_SIZE, 5,
+        EGL_GREEN_SIZE, 6,
+        EGL_BLUE_SIZE, 5,
+        EGL_ALPHA_SIZE, /*( flags & ES_WINDOW_ALPHA ) ? 8 :*/ EGL_DONT_CARE,
+        EGL_DEPTH_SIZE, /*( flags & ES_WINDOW_DEPTH ) ? 8 :*/ EGL_DONT_CARE,
+        EGL_STENCIL_SIZE, /*( flags & ES_WINDOW_STENCIL ) ? 8 :*/ EGL_DONT_CARE,
+        EGL_SAMPLE_BUFFERS, /*( flags & ES_WINDOW_MULTISAMPLE ) ? 1 :*/ 0,
+        EGL_NONE};
+    EGLConfig config;
+    EGLint    num_config;
+
+    if( !eglGetConfigs( display, NULL, 0, &num_config ) ) {
+        STDERR( "Failed to get EGL configuration.\n" );
+        return false;
+    }
+    STDOUT( "Got EGL %d configurations.\n", num_config );
+
+    if( !eglChooseConfig( display, attrib_list_choose_config, &config, 1, &num_config ) ) {
+        STDERR( "Failed to choose EGL configuration.\n" );
+        return false;
+    }
+    STDOUT( "Got %d matching EGL configurations.\n", num_config );
+
+    // At this point, one would use whatever platform-specific functions available (X11, Win32 API, ANativeWindow) to set up a native window to render to.
+    // For Emscripten, this step does not apply, and can be skipped.
+
+    // Create a main render target surface (EGLSurface) by calling eglCreateWindowSurface with a valid display and config parameters.
+    // Set window and attribute list parameters to null.
+    EGLSurface surface = eglCreateWindowSurface( display, config, 0, nullptr );
+    if( EGL_NO_SURFACE == surface ) {
+        STDERR( "Failed to create EGL windows surface with error 0x%x.\n", eglGetError() );
+        return false;
+    }
+    STDOUT( "Created EGL window.\n" );
+
+    // Create a GLES2 rendering context (EGLContext) by calling eglCreateContext, followed by a call to eglMakeCurrent to activate the rendering context.
+    // When creating the context, specify the context attribute EGL_CONTEXT_CLIENT_VERSION == 2.
+    EGLint const attrib_list_create_context[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE, EGL_NONE};
+    EGLContext context = eglCreateContext( display, config, EGL_NO_CONTEXT, attrib_list_create_context );
+    if( EGL_NO_CONTEXT == context ) {
+        STDERR( "Failed to create EGL context with error 0x%x.\n", eglGetError() );
+        return false;
+    }
+    STDOUT( "Created EGL context.\n" );
+
+    if( !eglMakeCurrent( display, surface, surface, context ) ) {
+        STDERR( "Failed to make  EGL context current with error 0x%x.\n", eglGetError() );
+        return false;
+    }
+    STDOUT( "Made EGL context current.\n" );
+
+    // // After these steps, you have a set of EGL objects EGLDisplay, EGLConfig, EGLSurface and EGLContext that represent the main GLES2 rendering context.
+    return true;
 }
 
-int main( int, char** ) {
-#ifdef EMSCRIPTEN
-    EM_ASM(
-        FS.mkdir( '/indexdb' );
-        FS.mount( IDBFS, {}, '/indexdb' );
+// void cleanup() {
+//     // Free up the currently active rendering context by calling eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT).
+//     EGLBoolean eglMakeCurrent( EGLDisplay display,
+//                                EGLSurface draw,
+//                                EGLSurface read,
+//                                EGLContext context );
+//
+//     // Deinitialize the EGLContext object by calling eglDestroyContext on it.
+//     EGLBoolean eglDestroyContext( EGLDisplay display,
+//                                   EGLContext context );
+//
+//     // Destroy all initialized EGLSurface objects by calling eglDestroySurface on them.
+//     EGLBoolean eglDestroySurface( EGLDisplay display,
+//                                   EGLSurface surface );
+//
+//     // Deinitialize EGL altogether by calling eglTerminate(display).
+//     EGLBoolean eglTerminate( EGLDisplay display );
+//
+//     // Delete the native rendering window. This step does not apply for Emscripten.
+// }
 
-        FS.syncfs( true, function( err ) {
-            assert( !err );
-            console.log( "Created /indexdb." );
-            ccall( 'make_stl', 'v' );
-        } ); );
-    emscripten_exit_with_live_runtime();
-#else
-    make_stl();
-#endif
+int main() {
+    initialize();
 }
