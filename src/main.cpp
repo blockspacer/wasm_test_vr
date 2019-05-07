@@ -2,15 +2,32 @@
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <emscripten.h>
 #include <fstream>
 #include <iostream>
 #include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
 #include <vector>
 
 #define STDOUT( text, ... ) printf( "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
 #define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text, __FILE__, __LINE__, ##__VA_ARGS__ )
 
-bool es_initialize() {
+struct UserContext {
+    GLint width;
+    GLint height;
+
+    EGLDisplay display;
+    EGLContext context;
+    EGLSurface surface;
+
+    GLuint program;
+
+    void ( *draw_func )( UserContext& );
+    void ( *update_func )( UserContext& );
+};
+
+bool es_initialize( UserContext& user_context ) {
     // Obtain a handle to an EGLDisplay object by calling eglGetDisplay.
     EGLDisplay display = eglGetDisplay( EGL_DEFAULT_DISPLAY );
     if( EGL_NO_DISPLAY == display ) {
@@ -18,6 +35,7 @@ bool es_initialize() {
         return false;
     }
     STDOUT( "Got display %p.\n", display );
+    user_context.display = display;
 
     // Initialize EGL on that display by calling eglInitialize.
     EGLint major;
@@ -65,6 +83,7 @@ bool es_initialize() {
         return false;
     }
     STDOUT( "Created EGL window.\n" );
+    user_context.surface = surface;
 
     // Create a GLES2 rendering context (EGLContext) by calling eglCreateContext, followed by a call to eglMakeCurrent to activate the rendering context.
     // When creating the context, specify the context attribute EGL_CONTEXT_CLIENT_VERSION == 2.
@@ -77,6 +96,7 @@ bool es_initialize() {
         return false;
     }
     STDOUT( "Created EGL context.\n" );
+    user_context.context = context;
 
     if( !eglMakeCurrent( display, surface, surface, context ) ) {
         STDERR( "Failed to make EGL context current with error 0x%x.\n", eglGetError() );
@@ -164,7 +184,7 @@ GLuint gles_load_shader( EGLenum type, const char* shaderSrc, const char* name )
     return shader;
 }
 
-bool gles_load_shaders() {
+bool gles_load_shaders( UserContext& user_context ) {
     std::string vert_glsl;
     if( !get_file_contents( "src_asset/stl.vert", vert_glsl ) ) {
         STDERR( "Failed to get vertex shader.\n" );
@@ -195,28 +215,114 @@ bool gles_load_shaders() {
     STDOUT( "Compiled fragment shader.\n" );
 
     // Create the program object
-    GLuint programObject = glCreateProgram();
+    GLuint program = glCreateProgram();
 
-    if( programObject == 0 ) {
+    if( program == 0 ) {
         return 0;
     }
 
-    glAttachShader( programObject, vertexShader );
-    glAttachShader( programObject, fragmentShader );
+    glAttachShader( program, vertexShader );
+    glAttachShader( program, fragmentShader );
 
     // Bind vPosition to attribute 0
-    glBindAttribLocation( programObject, 0, "vPosition" );
+    glBindAttribLocation( program, 0, "vPosition" );
 
     // Link the program
-    glLinkProgram( programObject );
+    glLinkProgram( program );
 
     // Check the link status
     GLint linked;
-    glGetProgramiv( programObject, GL_LINK_STATUS, &linked );
+    glGetProgramiv( program, GL_LINK_STATUS, &linked );
+
+    user_context.program = program;
 
     return true;
 }
 
+void gles_draw( UserContext& user_context ) {
+    GLfloat vVertices[] = {0.0f, 0.5f, 0.0f,
+                           -0.5f, -0.5f, 0.0f,
+                           0.5f, -0.5f, 0.0f};
+
+    GLuint vertexPosObject;
+    glGenBuffers( 1, &vertexPosObject );
+    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
+    glBufferData( GL_ARRAY_BUFFER, 9 * 4, vVertices, GL_STATIC_DRAW );
+
+    // Set the viewport
+    glViewport( 0, 0, user_context.width, user_context.height );
+
+    // Clear the color buffer
+    glClear( GL_COLOR_BUFFER_BIT );
+
+    // Use the program object
+    glUseProgram( user_context.program );
+
+    // Load the vertex data
+    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
+    glVertexAttribPointer( 0 /* ? */, 3, GL_FLOAT, 0, 0, 0 );
+    glEnableVertexAttribArray( 0 );
+
+    glDrawArrays( GL_TRIANGLES, 0, 3 );
+}
+
+// clang-format off
+EM_JS( int, get_canvas_width, (), {
+    var c = Module.canvas;
+    var w = c.clientWidth;
+    if( c.width !== w ) {
+        c.width = w;
+    }
+    return w;
+} );
+
+EM_JS( int, get_canvas_height, (), {
+    var c = Module.canvas;
+    var h = c.clientHeight;
+    if( c.height !== h ) {
+        c.height = h;
+    }
+    return h;
+} );
+// clang-format on
+
+void update( UserContext& user_context ) {
+    user_context.width  = get_canvas_width();
+    user_context.height = get_canvas_height();
+}
+
+void render_loop( void* arg ) {
+    UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
+    if( user_context.update_func != nullptr ) {
+        user_context.update_func( user_context );
+    }
+    if( user_context.draw_func != nullptr ) {
+        user_context.draw_func( user_context );
+    }
+
+    eglSwapBuffers( user_context.display, user_context.surface );
+}
+
 int main() {
-    es_initialize() && gles_load_shaders();
+    // Note that emscripten_set_main_loop_arg asynchronously registers a callback and then exits.
+    // Thus anything passed to it needs to be on the heap.
+    UserContext& user_context = *( new UserContext() );
+    memset( static_cast<void*>( &user_context ), 0, sizeof( user_context ) );
+
+    if( !( es_initialize( user_context ) && gles_load_shaders( user_context ) ) ) {
+        STDERR( "Failed to set up program.\n" );
+        return -1;
+    }
+    STDOUT( "Set up program.\n" );
+
+    user_context.update_func = update;
+    user_context.draw_func   = gles_draw;
+
+    emscripten_set_main_loop_arg(
+        render_loop,
+        static_cast<void*>( &user_context ),
+        0 /*use requestAnimationFrame*/,
+        false );
+    STDOUT( "Exiting main.\n" );
+    return 0;
 }
