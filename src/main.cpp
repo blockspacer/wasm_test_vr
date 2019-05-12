@@ -1,5 +1,6 @@
 // https://emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html#webgl-friendly-subset-of-opengl-es-2-0-3-0
 
+#include "math.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <emscripten.h>
@@ -17,8 +18,40 @@
 #define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text "\n", __FILE__, __LINE__, ##__VA_ARGS__ )
 
 namespace {
-    const int VR_NOT_SET = -1;
+    const int    VR_NOT_SET = -1;
+    const double PI         = atan2( 0, -1 );
 }
+
+// clang-format off
+EM_JS( double, get_timestamp, (), {
+    // We could lie to ourselves about the time and just use C/C++ techniques
+    // but this is more honest about sources of error.
+    // https://developer.mozilla.org/en-US/docs/Web/API/Performance/now
+    return window.performance.now();
+} );
+
+EM_JS( int, get_canvas_width, (), {
+    return Module.canvas.clientWidth;
+} );
+
+EM_JS( int, get_canvas_height, (), {
+    return Module.canvas.clientHeight;
+} );
+
+EM_JS( void, set_canvas_size, (int width, int height), {
+    var c = Module.canvas;
+
+    var w = c.clientWidth;
+    if( c.width !== w ) {
+        c.width = w;
+    }
+
+    var h = c.clientHeight;
+    if( c.height !== h ) {
+        c.height = h;
+    }
+} );
+// clang-format on
 
 class UserContext {
 public:
@@ -31,6 +64,7 @@ public:
 
     GLuint program;
     GLint  vec4_position;
+    GLint  mat4_model;
     GLint  mat4_view;
     GLint  mat4_projection;
 
@@ -49,6 +83,7 @@ public:
         , surface( 0 )
         , program( 0 )
         , vec4_position( -1 )
+        , mat4_model( -1 )
         , mat4_view( -1 )
         , mat4_projection( -1 )
         , draw_func( nullptr )
@@ -286,10 +321,12 @@ bool gles_load_shaders( UserContext& user_context ) {
 
     user_context.program         = program;
     user_context.vec4_position   = glGetAttribLocation( user_context.program, "vec4_position" );
+    user_context.mat4_model      = glGetUniformLocation( user_context.program, "mat4_model" );
     user_context.mat4_view       = glGetUniformLocation( user_context.program, "mat4_view" );
     user_context.mat4_projection = glGetUniformLocation( user_context.program, "mat4_projection" );
     STDOUT( "program         = %d", user_context.program );
     STDOUT( "vec4_position   = %d", user_context.vec4_position );
+    STDOUT( "mat4_model      = %d", user_context.mat4_model );
     STDOUT( "mat4_view       = %d", user_context.mat4_view );
     STDOUT( "mat4_projection = %d", user_context.mat4_projection );
 
@@ -304,10 +341,11 @@ void gles_draw( UserContext& user_context ) {
                                               0.5f, -0.5f, 0.0f};
 
     // Get a list of buffers to bind shader attributes to.
-    const GLsizei vertex_shader_buffer_count = 1;
+    const GLsizei vertex_shader_buffer_count = 2;
     GLuint        vertex_shader_buffers[vertex_shader_buffer_count];
     glGenBuffers( vertex_shader_buffer_count, vertex_shader_buffers );
     const GLuint vbuf_position = vertex_shader_buffers[0];
+    const GLuint vbuf_model    = vertex_shader_buffers[1];
 
     // Load vertices into vertex shader buffer for vertices.
     glBindBuffer( GL_ARRAY_BUFFER, vbuf_position );
@@ -341,6 +379,12 @@ void gles_draw( UserContext& user_context ) {
     };
 
     glUniformMatrix4fv(
+        user_context.mat4_model, // GLint location
+        1,                       // GLsizei count
+        GL_FALSE,                // GLboolean transpose
+        identity4 );             // const GLfloat* value
+
+    glUniformMatrix4fv(
         user_context.mat4_view, // GLint location
         1,                      // GLsizei count
         GL_FALSE,               // GLboolean transpose
@@ -360,10 +404,6 @@ void gles_draw( UserContext& user_context ) {
 }
 
 void print_frame_data( const VRFrameData& frame_data ) {
-    auto lpm  = frame_data.leftProjectionMatrix;
-    auto rpm  = frame_data.rightProjectionMatrix;
-    auto lvm  = frame_data.leftViewMatrix;
-    auto rvm  = frame_data.rightViewMatrix;
     auto flag = frame_data.pose.poseFlags;
 // clang-format off
 #define MATARG( m )                                         \
@@ -400,10 +440,10 @@ void print_frame_data( const VRFrameData& frame_data ) {
             "  ],\n"
             "  pose: {",
             frame_data.timestamp,
-            MATARG( lpm ),
-            MATARG( lvm ),
-            MATARG( rpm ),
-            MATARG( rvm ) );
+            MATARG( frame_data.leftProjectionMatrix ),
+            MATARG( frame_data.leftViewMatrix ),
+            MATARG( frame_data.rightProjectionMatrix ),
+            MATARG( frame_data.rightViewMatrix ) );
     if( flag & VR_POSE_POSITION ) {
         printf( "    position: {\n"
                 "      x: %+.6f,\n"
@@ -471,6 +511,14 @@ void print_frame_data( const VRFrameData& frame_data ) {
 #undef MATARG
 }
 
+// void transpose4( GLfloat* matrix ) {
+//     for( int i = 1; i < 4; ++i ) {
+//         for( int j = 0; j < i; ++j ) {
+//             swap( matrix[4 * i + j], matrix[4 * j + i] );
+//         }
+//     }
+// }
+
 void vr_gles_draw( UserContext& user_context ) {
     VRFrameData frame_data;
     if( !emscripten_vr_get_frame_data( user_context.vr_display, &frame_data ) ) {
@@ -478,9 +526,12 @@ void vr_gles_draw( UserContext& user_context ) {
         return;
     }
 
+    // Because some platforms don't actually fill in VRFrameData.timestamp we set it ourselves.
+    frame_data.timestamp = get_timestamp();
+
     static int x = 0;
-    if( !( x++ % 128 ) ) {
-        // print_frame_data( frame_data );
+    if( x++ < 100 ) {
+        print_frame_data( frame_data );
     }
 
     {
@@ -525,6 +576,26 @@ void vr_gles_draw( UserContext& user_context ) {
         auto width_l = user_context.width / 2;
         auto width_r = user_context.width - width_l;
 
+        // Set model orientation.
+        const double time_s = frame_data.timestamp / 1000.0;
+        const double q      = PI * time_s / 2.0;
+
+#define F( x ) static_cast<float>( x )
+        // clang-format off
+        GLfloat model_matrix[4 * 4] = {
+            F( cos( q ) ), 0.0f, F( -sin( q ) ), F( 1.25 + sin( q ) ),
+                     0.0f, 1.0f,           0.0f,                 0.0f,
+            F( sin( q ) ), 0.0f, F(  cos( q ) ),                 0.0f,
+                     0.0f, 0.0f,           0.0f,                 1.0f};
+// clang-format on
+#undef F
+        // transpose4( modelMatrix ); //GL uses a silly matrix order.
+        glUniformMatrix4fv(
+            user_context.mat4_model, // GLint location
+            1,                       // GLsizei count
+            GL_TRUE,                 // GLboolean transpose
+            model_matrix );          // const GLfloat* value
+
         // Draw left viewport.
         glUniformMatrix4fv(
             user_context.mat4_view,      // GLint location
@@ -559,30 +630,6 @@ void vr_gles_draw( UserContext& user_context ) {
         return;
     }
 }
-
-// clang-format off
-EM_JS( int, get_canvas_width, (), {
-    return Module.canvas.clientWidth;
-} );
-
-EM_JS( int, get_canvas_height, (), {
-    return Module.canvas.clientHeight;
-} );
-
-EM_JS( void, set_canvas_size, (int width, int height), {
-    var c = Module.canvas;
-
-    var w = c.clientWidth;
-    if( c.width !== w ) {
-        c.width = w;
-    }
-
-    var h = c.clientHeight;
-    if( c.height !== h ) {
-        c.height = h;
-    }
-} );
-// clang-format on
 
 void update( UserContext& user_context ) {
     user_context.width  = get_canvas_width();
