@@ -590,11 +590,6 @@ void update( UserContext& user_context ) {
     set_canvas_size( user_context.width, user_context.height );
 }
 
-void vr_present( void* arg ) {
-    UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
-    STDOUT( "VR Present" );
-}
-
 void vr_render_loop( void* arg ) {
     UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
 
@@ -604,23 +599,14 @@ void vr_render_loop( void* arg ) {
         emscripten_vr_cancel_display_render_loop( user_context.vr_display );
     } );
 
-    static bool requested = false;
-    static bool setup     = false;
-    if( !requested ) {
-        VRLayerInit init = {
-            "webgl-canvas",
-            VR_LAYER_DEFAULT_LEFT_BOUNDS,
-            VR_LAYER_DEFAULT_RIGHT_BOUNDS};
-
-        if( !emscripten_vr_request_present( user_context.vr_display, &init, 1, vr_present, static_cast<void*>( &user_context ) ) ) {
-            STDERR( "Request present with default canvas failed." );
-            return;
-        }
-        STDOUT( "Requested VR presentation." );
-
-        requested = true;
-    } else if( !setup ) {
+    static bool setup = false;
+    if( !setup ) {
         if( !emscripten_vr_display_presenting( user_context.vr_display ) ) {
+            static int waiting = 0;
+            if( 1000 < ++waiting ) {
+                STDERR( "Stopping waiting for VR." );
+                return;
+            }
             STDOUT( "Waiting to begin VR presentation." );
         } else {
             STDOUT( "VR is presenting." );
@@ -638,7 +624,10 @@ void vr_render_loop( void* arg ) {
     cleanup.Clear();
 }
 
-void switch_to_vr( UserContext& user_context ) {
+void vr_present( void* arg ) {
+    UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
+    STDOUT( "VR presentation granted." );
+
     Finally cleanup( [&]() {
         STDERR( "Canceling attempt to use VR." );
         user_context.use_vr = false;
@@ -651,6 +640,26 @@ void switch_to_vr( UserContext& user_context ) {
     }
 
     user_context.draw_func = vr_gles_draw;
+
+    cleanup.Clear();
+}
+
+void switch_to_vr( UserContext& user_context ) {
+    Finally cleanup( [&]() {
+        STDERR( "Canceling attempt to use VR." );
+        user_context.use_vr = false;
+    } );
+
+    VRLayerInit init = {
+        "webgl-canvas",
+        VR_LAYER_DEFAULT_LEFT_BOUNDS,
+        VR_LAYER_DEFAULT_RIGHT_BOUNDS};
+
+    if( !emscripten_vr_request_present( user_context.vr_display, &init, 1, vr_present, static_cast<void*>( &user_context ) ) ) {
+        STDERR( "Request present with default canvas failed." );
+        return;
+    }
+    STDOUT( "Requested VR presentation." );
 
     cleanup.Clear();
     STDOUT( "Ready for VR rendering loop." );
