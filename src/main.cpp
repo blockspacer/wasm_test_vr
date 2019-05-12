@@ -3,6 +3,7 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <emscripten.h>
+#include <emscripten/html5.h>
 #include <emscripten/vr.h>
 #include <fstream>
 #include <functional>
@@ -15,7 +16,9 @@
 #define STDOUT( text, ... ) printf( "%s:%d: " text "\n", __FILE__, __LINE__, ##__VA_ARGS__ )
 #define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text "\n", __FILE__, __LINE__, ##__VA_ARGS__ )
 
-const int VR_NOT_SET = -1;
+namespace {
+    const int VR_NOT_SET = -1;
+}
 
 class UserContext {
 public:
@@ -27,6 +30,9 @@ public:
     EGLSurface surface;
 
     GLuint program;
+    GLint  vec4_position;
+    GLint  mat4_view;
+    GLint  mat4_projection;
 
     void ( *draw_func )( UserContext& );
     void ( *update_func )( UserContext& );
@@ -42,6 +48,9 @@ public:
         , context( 0 )
         , surface( 0 )
         , program( 0 )
+        , vec4_position( -1 )
+        , mat4_view( -1 )
+        , mat4_projection( -1 )
         , draw_func( nullptr )
         , update_func( nullptr )
         , use_vr( true )
@@ -256,16 +265,13 @@ bool gles_load_shaders( UserContext& user_context ) {
 
     // Create the program object
     GLuint program = glCreateProgram();
-
     if( program == 0 ) {
-        return 0;
+        STDERR( "Failed to create program." );
+        return false;
     }
 
     glAttachShader( program, vertexShader );
     glAttachShader( program, fragmentShader );
-
-    // Bind vPosition to attribute 0
-    glBindAttribLocation( program, 0, "vPosition" );
 
     // Link the program
     glLinkProgram( program );
@@ -273,37 +279,196 @@ bool gles_load_shaders( UserContext& user_context ) {
     // Check the link status
     GLint linked;
     glGetProgramiv( program, GL_LINK_STATUS, &linked );
+    if( !linked ) {
+        STDERR( "Failed to link." );
+        return false;
+    }
 
-    user_context.program = program;
+    user_context.program         = program;
+    user_context.vec4_position   = glGetAttribLocation( user_context.program, "vec4_position" );
+    user_context.mat4_view       = glGetUniformLocation( user_context.program, "mat4_view" );
+    user_context.mat4_projection = glGetUniformLocation( user_context.program, "mat4_projection" );
+    STDOUT( "program         = %d", user_context.program );
+    STDOUT( "vec4_position   = %d", user_context.vec4_position );
+    STDOUT( "mat4_view       = %d", user_context.mat4_view );
+    STDOUT( "mat4_projection = %d", user_context.mat4_projection );
 
     return true;
 }
 
 void gles_draw( UserContext& user_context ) {
-    GLfloat vVertices[] = {0.0f, 0.5f, 0.0f,
-                           -0.5f, -0.5f, 0.0f,
-                           0.5f, -0.5f, 0.0f};
+    const int DIMENSION                      = 3;
+    const int VERTICES                       = 3;
+    GLfloat   vertices[DIMENSION * VERTICES] = {0.0f, 0.5f, 0.0f,
+                                              -0.5f, -0.5f, 0.0f,
+                                              0.5f, -0.5f, 0.0f};
 
-    GLuint vertexPosObject;
-    glGenBuffers( 1, &vertexPosObject );
-    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
-    glBufferData( GL_ARRAY_BUFFER, 9 * 4, vVertices, GL_STATIC_DRAW );
+    // Get a list of buffers to bind shader attributes to.
+    const GLsizei vertex_shader_buffer_count = 1;
+    GLuint        vertex_shader_buffers[vertex_shader_buffer_count];
+    glGenBuffers( vertex_shader_buffer_count, vertex_shader_buffers );
+    const GLuint vbuf_position = vertex_shader_buffers[0];
 
-    // Set the viewport
+    // Load vertices into vertex shader buffer for vertices.
+    glBindBuffer( GL_ARRAY_BUFFER, vbuf_position );
+    glBufferData( GL_ARRAY_BUFFER, sizeof( vertices ), vertices, GL_STATIC_DRAW );
+
+    // Set the viewport.
     glViewport( 0, 0, user_context.width, user_context.height );
 
-    // Clear the color buffer
+    // Clear the color output buffer.
     glClear( GL_COLOR_BUFFER_BIT );
 
-    // Use the program object
+    // Use this shader program.
     glUseProgram( user_context.program );
 
-    // Load the vertex data
-    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
-    glVertexAttribPointer( 0 /* ? */, 3, GL_FLOAT, 0, 0, 0 );
-    glEnableVertexAttribArray( 0 );
+    // Point the shader attribute for position at the shader buffer for position.
+    glBindBuffer( GL_ARRAY_BUFFER, vbuf_position );
+    glVertexAttribPointer(
+        user_context.vec4_position, // GLuint index
+        DIMENSION,                  // GLint size (in number of vertex dimensions)
+        GL_FLOAT,                   // GLenum type
+        0,                          // GLboolean normalized (i.e. is-fixed-point)
+        0,                          // GLsizei stride (i.e. byte offset between consecutive elements)
+        0 );                        // const GLvoid * pointer (because GL_ARRAY_BUFFER is bound this is an offset into that bound buffer)
+    glEnableVertexAttribArray( user_context.vec4_position );
 
-    glDrawArrays( GL_TRIANGLES, 0, 3 );
+    GLfloat identity4[4 * 4] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+
+    glUniformMatrix4fv(
+        user_context.mat4_view, // GLint location
+        1,                      // GLsizei count
+        GL_FALSE,               // GLboolean transpose
+        identity4 );            // const GLfloat* value
+
+    glUniformMatrix4fv(
+        user_context.mat4_projection, // GLint location
+        1,                            // GLsizei count
+        GL_FALSE,                     // GLboolean transpose
+        identity4 );                  // const GLfloat* value
+
+    // Draw.
+    glDrawArrays(
+        GL_TRIANGLES, // GLenum mode
+        0,            // GLint first
+        VERTICES );   // GLsizei count (in number of vertices in this case)
+}
+
+void print_frame_data( const VRFrameData& frame_data ) {
+    auto lpm  = frame_data.leftProjectionMatrix;
+    auto rpm  = frame_data.rightProjectionMatrix;
+    auto lvm  = frame_data.leftViewMatrix;
+    auto rvm  = frame_data.rightViewMatrix;
+    auto flag = frame_data.pose.poseFlags;
+// clang-format off
+#define MATARG( m )                                         \
+    m[0 + 4 * 0], m[0 + 4 * 1], m[0 + 4 * 2], m[0 + 4 * 3], \
+    m[1 + 4 * 0], m[1 + 4 * 1], m[1 + 4 * 2], m[1 + 4 * 3], \
+    m[2 + 4 * 0], m[2 + 4 * 1], m[2 + 4 * 2], m[2 + 4 * 3], \
+    m[3 + 4 * 0], m[3 + 4 * 1], m[3 + 4 * 2], m[3 + 4 * 3]
+    // clang-format on
+    STDOUT( "VRFrameData {\n"
+            "  timestamp: %lf,\n"
+            "  leftProjectionMatrix: [\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "  ],\n"
+            "  leftViewMatrix: [\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "  ],\n"
+            "  rightProjectionMatrix: [\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "  ],\n"
+            "  rightViewMatrix: [\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
+            "  ],\n"
+            "  pose: {",
+            frame_data.timestamp,
+            MATARG( lpm ),
+            MATARG( lvm ),
+            MATARG( rpm ),
+            MATARG( rvm ) );
+    if( flag & VR_POSE_POSITION ) {
+        printf( "    position: {\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.position.x,
+                frame_data.pose.position.y,
+                frame_data.pose.position.z );
+    }
+    if( flag & VR_POSE_LINEAR_VELOCITY ) {
+        printf( "    linearVelocity: {\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.linearVelocity.x,
+                frame_data.pose.linearVelocity.y,
+                frame_data.pose.linearVelocity.z );
+    }
+    if( flag & VR_POSE_LINEAR_ACCELERATION ) {
+        printf( "    linearAcceleration: {\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.linearAcceleration.x,
+                frame_data.pose.linearAcceleration.y,
+                frame_data.pose.linearAcceleration.z );
+    }
+    if( flag & VR_POSE_ORIENTATION ) {
+        printf( "    orientation: {\n"
+                "      w: %+.6f,\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.orientation.w,
+                frame_data.pose.orientation.x,
+                frame_data.pose.orientation.y,
+                frame_data.pose.orientation.z );
+    }
+    if( flag & VR_POSE_ANGULAR_VELOCITY ) {
+        printf( "    angularVelocity: {\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.angularVelocity.x,
+                frame_data.pose.angularVelocity.y,
+                frame_data.pose.angularVelocity.z );
+    }
+    if( flag & VR_POSE_ANGULAR_ACCELERATION ) {
+        printf( "    angularAcceleration: {\n"
+                "      x: %+.6f,\n"
+                "      y: %+.6f,\n"
+                "      z: %+.6f,\n"
+                "    },\n",
+                frame_data.pose.angularAcceleration.x,
+                frame_data.pose.angularAcceleration.y,
+                frame_data.pose.angularAcceleration.z );
+    }
+    printf( "  }\n"
+            "}\n" );
+#undef MATARG
 }
 
 void vr_gles_draw( UserContext& user_context ) {
@@ -314,153 +479,80 @@ void vr_gles_draw( UserContext& user_context ) {
     }
 
     static int x = 0;
-    if( !( x++ % 100 ) ) {
-        auto lpm  = frame_data.leftProjectionMatrix;
-        auto rpm  = frame_data.rightProjectionMatrix;
-        auto lvm  = frame_data.leftViewMatrix;
-        auto rvm  = frame_data.rightViewMatrix;
-        auto flag = frame_data.pose.poseFlags;
-        STDOUT( "VRFrameData {\n"
-                "  timestamp: %lf,\n"
-                "  leftProjectionMatrix: [\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "  ],\n"
-                "  leftViewMatrix: [\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "  ],\n"
-                "  rightProjectionMatrix: [\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "  ],\n"
-                "  rightViewMatrix: [\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-                "  ],\n"
-                "  pose: {",
-                frame_data.timestamp,
-
-                lpm[4 * 0 + 0], lpm[4 * 0 + 1], lpm[4 * 0 + 2], lpm[4 * 0 + 3],
-                lpm[4 * 1 + 0], lpm[4 * 1 + 1], lpm[4 * 1 + 2], lpm[4 * 1 + 3],
-                lpm[4 * 2 + 0], lpm[4 * 2 + 1], lpm[4 * 2 + 2], lpm[4 * 2 + 3],
-                lpm[4 * 3 + 0], lpm[4 * 3 + 1], lpm[4 * 3 + 2], lpm[4 * 3 + 3],
-
-                lvm[4 * 0 + 0], lvm[4 * 0 + 1], lvm[4 * 0 + 2], lvm[4 * 0 + 3],
-                lvm[4 * 1 + 0], lvm[4 * 1 + 1], lvm[4 * 1 + 2], lvm[4 * 1 + 3],
-                lvm[4 * 2 + 0], lvm[4 * 2 + 1], lvm[4 * 2 + 2], lvm[4 * 2 + 3],
-                lvm[4 * 3 + 0], lvm[4 * 3 + 1], lvm[4 * 3 + 2], lvm[4 * 3 + 3],
-
-                rpm[4 * 0 + 0], rpm[4 * 0 + 1], rpm[4 * 0 + 2], rpm[4 * 0 + 3],
-                rpm[4 * 1 + 0], rpm[4 * 1 + 1], rpm[4 * 1 + 2], rpm[4 * 1 + 3],
-                rpm[4 * 2 + 0], rpm[4 * 2 + 1], rpm[4 * 2 + 2], rpm[4 * 2 + 3],
-                rpm[4 * 3 + 0], rpm[4 * 3 + 1], rpm[4 * 3 + 2], rpm[4 * 3 + 3],
-
-                rvm[4 * 0 + 0], rvm[4 * 0 + 1], rvm[4 * 0 + 2], rvm[4 * 0 + 3],
-                rvm[4 * 1 + 0], rvm[4 * 1 + 1], rvm[4 * 1 + 2], rvm[4 * 1 + 3],
-                rvm[4 * 2 + 0], rvm[4 * 2 + 1], rvm[4 * 2 + 2], rvm[4 * 2 + 3],
-                rvm[4 * 3 + 0], rvm[4 * 3 + 1], rvm[4 * 3 + 2], rvm[4 * 3 + 3] );
-        if( flag & VR_POSE_POSITION ) {
-            printf( "    position: {\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.position.x,
-                    frame_data.pose.position.y,
-                    frame_data.pose.position.z );
-        }
-        if( flag & VR_POSE_LINEAR_VELOCITY ) {
-            printf( "    linearVelocity: {\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.linearVelocity.x,
-                    frame_data.pose.linearVelocity.y,
-                    frame_data.pose.linearVelocity.z );
-        }
-        if( flag & VR_POSE_LINEAR_ACCELERATION ) {
-            printf( "    linearAcceleration: {\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.linearAcceleration.x,
-                    frame_data.pose.linearAcceleration.y,
-                    frame_data.pose.linearAcceleration.z );
-        }
-        if( flag & VR_POSE_ORIENTATION ) {
-            printf( "    orientation: {\n"
-                    "      w: %+.6f,\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.orientation.w,
-                    frame_data.pose.orientation.x,
-                    frame_data.pose.orientation.y,
-                    frame_data.pose.orientation.z );
-        }
-        if( flag & VR_POSE_ANGULAR_VELOCITY ) {
-            printf( "    angularVelocity: {\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.angularVelocity.x,
-                    frame_data.pose.angularVelocity.y,
-                    frame_data.pose.angularVelocity.z );
-        }
-        if( flag & VR_POSE_ANGULAR_ACCELERATION ) {
-            printf( "    angularAcceleration: {\n"
-                    "      x: %+.6f,\n"
-                    "      y: %+.6f,\n"
-                    "      z: %+.6f,\n"
-                    "    },\n",
-                    frame_data.pose.angularAcceleration.x,
-                    frame_data.pose.angularAcceleration.y,
-                    frame_data.pose.angularAcceleration.z );
-        }
-        printf( "  }\n"
-                "}\n" );
+    if( !( x++ % 128 ) ) {
+        // print_frame_data( frame_data );
     }
 
-    GLfloat vVertices[] = {0.0f, 0.5f, 0.0f,
-                           -0.5f, -0.5f, 0.0f,
-                           0.5f, -0.5f, 0.0f};
+    {
+        const int DIMENSION                      = 3;
+        const int VERTICES                       = 3;
+        GLfloat   vertices[DIMENSION * VERTICES] = {0.0f, 0.5f, 0.0f,
+                                                  -0.5f, -0.5f, 0.0f,
+                                                  0.5f, -0.5f, 0.0f};
 
-    GLuint vertexPosObject;
-    glGenBuffers( 1, &vertexPosObject );
-    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
-    glBufferData( GL_ARRAY_BUFFER, 9 * 4, vVertices, GL_STATIC_DRAW );
+        // Get a list of buffers to bind shader attributes to.
+        const GLsizei vertex_shader_buffer_count = 1;
+        GLuint        vertex_shader_buffers[vertex_shader_buffer_count];
+        glGenBuffers( vertex_shader_buffer_count, vertex_shader_buffers );
+        const GLuint vbuf_position = vertex_shader_buffers[0];
 
-    // Clear the color buffer
-    glClear( GL_COLOR_BUFFER_BIT );
+        // Load vertices into vertex shader buffer for vertices.
+        glBindBuffer( GL_ARRAY_BUFFER, vbuf_position );
+        glBufferData( GL_ARRAY_BUFFER, sizeof( vertices ), vertices, GL_STATIC_DRAW );
 
-    // Use the program object
-    glUseProgram( user_context.program );
+        // Set the viewport.
+        glViewport( 0, 0, user_context.width, user_context.height );
 
-    // Load the vertex data
-    glBindBuffer( GL_ARRAY_BUFFER, vertexPosObject );
-    glVertexAttribPointer( 0 /* ? */, 3, GL_FLOAT, 0, 0, 0 );
-    glEnableVertexAttribArray( 0 );
+        // Clear the color output buffer.
+        glClear( GL_COLOR_BUFFER_BIT );
 
-    auto width_l = user_context.width / 2;
-    auto width_r = user_context.width - width_l;
-    glViewport( 0, 0, width_l, user_context.height );
-    glDrawArrays( GL_TRIANGLES, 0, 3 );
+        // Use this shader program.
+        glUseProgram( user_context.program );
 
-    glViewport( width_l, 0, width_r, user_context.height );
-    glDrawArrays( GL_TRIANGLES, 0, 3 );
+        // Point the shader attribute for position at the shader buffer for position.
+        glBindBuffer( GL_ARRAY_BUFFER, vbuf_position );
+        glVertexAttribPointer(
+            user_context.vec4_position, // GLuint index
+            DIMENSION,                  // GLint size (in number of vertex dimensions)
+            GL_FLOAT,                   // GLenum type
+            0,                          // GLboolean normalized (i.e. is-fixed-point)
+            0,                          // GLsizei stride (i.e. byte offset between consecutive elements)
+            0 );                        // const GLvoid * pointer (because GL_ARRAY_BUFFER is bound this is an offset into that bound buffer)
+        glEnableVertexAttribArray( user_context.vec4_position );
+
+        // Draw
+
+        auto width_l = user_context.width / 2;
+        auto width_r = user_context.width - width_l;
+
+        // Draw left viewport.
+        glUniformMatrix4fv(
+            user_context.mat4_view,      // GLint location
+            1,                           // GLsizei count
+            GL_FALSE,                    // GLboolean transpose
+            frame_data.leftViewMatrix ); // const GLfloat* value
+        glUniformMatrix4fv(
+            user_context.mat4_projection,      // GLint location
+            1,                                 // GLsizei count
+            GL_FALSE,                          // GLboolean transpose
+            frame_data.leftProjectionMatrix ); // const GLfloat* value
+        glViewport( 0, 0, width_l, user_context.height );
+        glDrawArrays( GL_TRIANGLES, 0, 3 );
+
+        // Draw right viewport.
+        glUniformMatrix4fv(
+            user_context.mat4_view,       // GLint location
+            1,                            // GLsizei count
+            GL_FALSE,                     // GLboolean transpose
+            frame_data.rightViewMatrix ); // const GLfloat* value
+        glUniformMatrix4fv(
+            user_context.mat4_projection,       // GLint location
+            1,                                  // GLsizei count
+            GL_FALSE,                           // GLboolean transpose
+            frame_data.rightProjectionMatrix ); // const GLfloat* value
+        glViewport( width_l, 0, width_r, user_context.height );
+        glDrawArrays( GL_TRIANGLES, 0, 3 );
+    }
 
     if( !emscripten_vr_submit_frame( user_context.vr_display ) ) {
         STDERR( "Failed to submit frame to VR display." );
@@ -470,27 +562,32 @@ void vr_gles_draw( UserContext& user_context ) {
 
 // clang-format off
 EM_JS( int, get_canvas_width, (), {
+    return Module.canvas.clientWidth;
+} );
+
+EM_JS( int, get_canvas_height, (), {
+    return Module.canvas.clientHeight;
+} );
+
+EM_JS( void, set_canvas_size, (int width, int height), {
     var c = Module.canvas;
+
     var w = c.clientWidth;
     if( c.width !== w ) {
         c.width = w;
     }
-    return w;
-} );
 
-EM_JS( int, get_canvas_height, (), {
-    var c = Module.canvas;
     var h = c.clientHeight;
     if( c.height !== h ) {
         c.height = h;
     }
-    return h;
 } );
 // clang-format on
 
 void update( UserContext& user_context ) {
     user_context.width  = get_canvas_width();
     user_context.height = get_canvas_height();
+    set_canvas_size( user_context.width, user_context.height );
 }
 
 void vr_present( void* arg ) {
@@ -507,25 +604,32 @@ void vr_render_loop( void* arg ) {
         emscripten_vr_cancel_display_render_loop( user_context.vr_display );
     } );
 
-    static bool setup = false;
-    if( !setup ) {
+    static bool requested = false;
+    static bool setup     = false;
+    if( !requested ) {
         VRLayerInit init = {
             "webgl-canvas",
             VR_LAYER_DEFAULT_LEFT_BOUNDS,
             VR_LAYER_DEFAULT_RIGHT_BOUNDS};
 
         if( !emscripten_vr_request_present( user_context.vr_display, &init, 1, vr_present, static_cast<void*>( &user_context ) ) ) {
-            STDERR( "Request present with default canvas failed.\n" );
+            STDERR( "Request present with default canvas failed." );
             return;
         }
+        STDOUT( "Requested VR presentation." );
 
-        if( emscripten_vr_display_presenting( user_context.vr_display ) ) {
-            STDERR( "Expected display not to be presenting.\n" );
-            return;
+        requested = true;
+    } else if( !setup ) {
+        if( !emscripten_vr_display_presenting( user_context.vr_display ) ) {
+            STDOUT( "Waiting to begin VR presentation." );
+        } else {
+            STDOUT( "VR is presenting." );
+            setup = true;
         }
-
-        setup = true;
     } else {
+        if( user_context.update_func != nullptr ) {
+            user_context.update_func( user_context );
+        }
         if( user_context.draw_func != nullptr ) {
             user_context.draw_func( user_context );
         }
@@ -534,24 +638,43 @@ void vr_render_loop( void* arg ) {
     cleanup.Clear();
 }
 
+void switch_to_vr( UserContext& user_context ) {
+    Finally cleanup( [&]() {
+        STDERR( "Canceling attempt to use VR." );
+        user_context.use_vr = false;
+    } );
+
+    emscripten_cancel_main_loop();
+    if( !emscripten_vr_set_display_render_loop_arg( user_context.vr_display, vr_render_loop, static_cast<void*>( &user_context ) ) ) {
+        STDERR( "Failed set display VR render loop of device %d.", user_context.vr_display );
+        return;
+    }
+
+    user_context.draw_func = vr_gles_draw;
+
+    cleanup.Clear();
+    STDOUT( "Ready for VR rendering loop." );
+}
+
+EM_BOOL on_click_switch_to_vr( int, const EmscriptenMouseEvent*, void* arg ) {
+    UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
+    switch_to_vr( user_context );
+    return true;
+}
+
 void init_loop( void* arg ) {
     UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
     if( user_context.update_func != nullptr ) {
         user_context.update_func( user_context );
     }
 
-    if( !user_context.use_vr ) {
-        // Draw and exit.
-        if( user_context.draw_func != nullptr ) {
-            user_context.draw_func( user_context );
-        }
-        eglSwapBuffers( user_context.display, user_context.surface );
-
-        return;
+    // Draw normally.
+    if( user_context.draw_func != nullptr ) {
+        user_context.draw_func( user_context );
     }
+    eglSwapBuffers( user_context.display, user_context.surface );
 
     // Begin use of VR.
-
     if( user_context.use_vr && ( user_context.vr_display == VR_NOT_SET ) ) {
         if( !emscripten_vr_ready() ) {
             STDOUT( "VR not ready" );
@@ -599,20 +722,22 @@ void init_loop( void* arg ) {
             }
         }
 
-        emscripten_cancel_main_loop();
-        if( !emscripten_vr_set_display_render_loop_arg( user_context.vr_display, vr_render_loop, static_cast<void*>( &user_context ) ) ) {
-            STDERR( "Failed set display VR render loop of device %d.",
-                    user_context.vr_display );
-            return;
+        if( emscripten_vr_display_presenting( user_context.vr_display ) ) {
+            STDOUT( "Already VR presenting, jump straight into VR." );
+            switch_to_vr( user_context );
+        } else {
+            if( EMSCRIPTEN_RESULT_SUCCESS != emscripten_set_click_callback( "enter-vr", static_cast<void*>( &user_context ), false, on_click_switch_to_vr ) ) {
+                STDERR( "Failed to attach callback for entering VR." );
+            }
+
+            STDOUT( "Ready for user to request VR rendering loop." );
+            // The user must request VR rendering from here.
         }
 
-        user_context.draw_func = vr_gles_draw;
-
         cleanup.Clear();
-        STDOUT( "Ready for VR rendering loop." );
     }
 
-    STDOUT( "Init loop." );
+    // STDOUT( "Init loop." );
 }
 
 void on_vr_init( void* ) {
