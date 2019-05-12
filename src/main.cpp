@@ -32,25 +32,23 @@ EM_JS( double, get_timestamp, (), {
     return window.performance.now();
 } );
 
-EM_JS( int, get_canvas_width, (), {
+EM_JS( int, get_canvas_client_width, (), {
     return Module.canvas.clientWidth;
 } );
 
-EM_JS( int, get_canvas_height, (), {
+EM_JS( int, get_canvas_client_height, (), {
     return Module.canvas.clientHeight;
 } );
 
 EM_JS( void, set_canvas_size, (int width, int height), {
     var c = Module.canvas;
 
-    var w = c.clientWidth;
-    if( c.width !== w ) {
-        c.width = w;
+    if( c.width !== width ) {
+        c.width = width;
     }
 
-    var h = c.clientHeight;
-    if( c.height !== h ) {
-        c.height = h;
+    if( c.height !== height ) {
+        c.height = height;
     }
 } );
 // clang-format on
@@ -627,8 +625,8 @@ void vr_gles_draw( UserContext& user_context ) {
 }
 
 void update( UserContext& user_context ) {
-    user_context.width  = get_canvas_width();
-    user_context.height = get_canvas_height();
+    user_context.width  = get_canvas_client_width();
+    user_context.height = get_canvas_client_height();
     set_canvas_size( user_context.width, user_context.height );
 }
 
