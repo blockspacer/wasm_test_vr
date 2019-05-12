@@ -1,6 +1,5 @@
 // https://emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html#webgl-friendly-subset-of-opengl-es-2-0-3-0
 
-#include "math.h"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <emscripten.h>
@@ -9,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -18,6 +18,8 @@
 #define STDERR( text, ... ) fprintf( stderr, "%s:%d: " text "\n", __FILE__, __LINE__, ##__VA_ARGS__ )
 
 namespace {
+    const char*  CANVAS_ID  = "webgl-canvas";
+    const char*  BUTTON_ID  = "enter-vr";
     const int    VR_NOT_SET = -1;
     const double PI         = atan2( 0, -1 );
 }
@@ -25,7 +27,7 @@ namespace {
 // clang-format off
 EM_JS( double, get_timestamp, (), {
     // We could lie to ourselves about the time and just use C/C++ techniques
-    // but this is more honest about sources of error.
+    // but this is more honest about provided precision.
     // https://developer.mozilla.org/en-US/docs/Web/API/Performance/now
     return window.performance.now();
 } );
@@ -111,7 +113,7 @@ private:
     std::function<void( void )> functor_;
 };
 
-bool es_initialize( UserContext& user_context ) {
+bool egl_initialize( UserContext& user_context ) {
     // Obtain a handle to an EGLDisplay object by calling eglGetDisplay.
     EGLDisplay display = eglGetDisplay( EGL_DEFAULT_DISPLAY );
     if( EGL_NO_DISPLAY == display ) {
@@ -192,7 +194,7 @@ bool es_initialize( UserContext& user_context ) {
     return true;
 }
 
-// void es_cleanup() {
+// void egl_cleanup() {
 //     // Free up the currently active rendering context by calling eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT).
 //     EGLBoolean eglMakeCurrent( EGLDisplay display,
 //                                EGLSurface draw,
@@ -227,18 +229,19 @@ bool get_file_contents( const char* filename, std::string& contents ) {
     return false;
 }
 
-GLuint gles_load_shader( EGLenum type, const char* shaderSrc, const char* name ) {
+GLuint gles_load_shader( EGLenum type, const char* shader_source, const char* name ) {
     GLuint shader;
     GLint  compiled;
 
     // Create the shader object
     shader = glCreateShader( type );
 
-    if( shader == 0 )
+    if( !shader ) {
         return 0;
+    }
 
     // Load the shader source
-    glShaderSource( shader, 1, &shaderSrc, NULL );
+    glShaderSource( shader, 1, &shader_source, NULL );
 
     // Compile the shader
     glCompileShader( shader );
@@ -247,18 +250,19 @@ GLuint gles_load_shader( EGLenum type, const char* shaderSrc, const char* name )
     glGetShaderiv( shader, GL_COMPILE_STATUS, &compiled );
 
     if( !compiled ) {
-        GLint infoLen = 0;
+        GLint info_log_length = 0;
 
-        glGetShaderiv( shader, GL_INFO_LOG_LENGTH, &infoLen );
+        glGetShaderiv( shader, GL_INFO_LOG_LENGTH, &info_log_length );
 
-        if( infoLen > 1 ) {
-            char* infoLog = new char[infoLen];
+        if( info_log_length > 1 ) {
+            char* info_log = new char[info_log_length];
 
-            glGetShaderInfoLog( shader, infoLen, NULL, infoLog );
-            STDERR( "Error compiling shader %s:\n%s", name, infoLog );
-            STDERR( "%s", shaderSrc );
+            // Terminating null-character included.
+            glGetShaderInfoLog( shader, info_log_length, NULL, info_log );
+            STDERR( "Error compiling shader %s:\n%s", name, info_log );
+            STDERR( "%s", shader_source );
 
-            delete[] infoLog;
+            delete[] info_log;
         }
 
         glDeleteShader( shader );
@@ -284,15 +288,15 @@ bool gles_load_shaders( UserContext& user_context ) {
     STDOUT( "Got fragment shader." );
 
     // Load the vertex/fragment shaders
-    GLuint vertexShader = gles_load_shader( GL_VERTEX_SHADER, vert_glsl.c_str(), "vertex" );
-    if( !vertexShader ) {
+    GLuint vertex_shader = gles_load_shader( GL_VERTEX_SHADER, vert_glsl.c_str(), "vertex" );
+    if( !vertex_shader ) {
         STDERR( "Failed to compile vertex shader." );
         return false;
     }
     STDOUT( "Compiled vertex shader." );
 
-    GLuint fragmentShader = gles_load_shader( GL_FRAGMENT_SHADER, frag_glsl.c_str(), "fragment" );
-    if( !fragmentShader ) {
+    GLuint fragment_shader = gles_load_shader( GL_FRAGMENT_SHADER, frag_glsl.c_str(), "fragment" );
+    if( !fragment_shader ) {
         STDERR( "Failed to compile fragment shader." );
         return false;
     }
@@ -300,13 +304,13 @@ bool gles_load_shaders( UserContext& user_context ) {
 
     // Create the program object
     GLuint program = glCreateProgram();
-    if( program == 0 ) {
+    if( !program ) {
         STDERR( "Failed to create program." );
         return false;
     }
 
-    glAttachShader( program, vertexShader );
-    glAttachShader( program, fragmentShader );
+    glAttachShader( program, vertex_shader );
+    glAttachShader( program, fragment_shader );
 
     // Link the program
     glLinkProgram( program );
@@ -511,14 +515,6 @@ void print_frame_data( const VRFrameData& frame_data ) {
 #undef MATARG
 }
 
-// void transpose4( GLfloat* matrix ) {
-//     for( int i = 1; i < 4; ++i ) {
-//         for( int j = 0; j < i; ++j ) {
-//             swap( matrix[4 * i + j], matrix[4 * j + i] );
-//         }
-//     }
-// }
-
 void vr_gles_draw( UserContext& user_context ) {
     VRFrameData frame_data;
     if( !emscripten_vr_get_frame_data( user_context.vr_display, &frame_data ) ) {
@@ -529,8 +525,8 @@ void vr_gles_draw( UserContext& user_context ) {
     // Because some platforms don't actually fill in VRFrameData.timestamp we set it ourselves.
     frame_data.timestamp = get_timestamp();
 
-    static int x = 0;
-    if( x++ < 100 ) {
+    static int print_limit_counter = 0;
+    if( print_limit_counter++ < 100 ) {
         print_frame_data( frame_data );
     }
 
@@ -589,7 +585,6 @@ void vr_gles_draw( UserContext& user_context ) {
                      0.0f, 0.0f,           0.0f,                 1.0f};
 // clang-format on
 #undef F
-        // transpose4( modelMatrix ); //GL uses a silly matrix order.
         glUniformMatrix4fv(
             user_context.mat4_model, // GLint location
             1,                       // GLsizei count
@@ -698,7 +693,7 @@ void switch_to_vr( UserContext& user_context ) {
     } );
 
     VRLayerInit init = {
-        "webgl-canvas",
+        CANVAS_ID,
         VR_LAYER_DEFAULT_LEFT_BOUNDS,
         VR_LAYER_DEFAULT_RIGHT_BOUNDS};
 
@@ -782,7 +777,7 @@ void init_loop( void* arg ) {
             STDOUT( "Already VR presenting, jump straight into VR." );
             switch_to_vr( user_context );
         } else {
-            if( EMSCRIPTEN_RESULT_SUCCESS != emscripten_set_click_callback( "enter-vr", static_cast<void*>( &user_context ), false, on_click_switch_to_vr ) ) {
+            if( EMSCRIPTEN_RESULT_SUCCESS != emscripten_set_click_callback( BUTTON_ID, static_cast<void*>( &user_context ), false, on_click_switch_to_vr ) ) {
                 STDERR( "Failed to attach callback for entering VR." );
             }
 
@@ -805,7 +800,7 @@ int main() {
     // Thus anything passed to it needs to be on the heap.
     UserContext& user_context = *( new UserContext() );
 
-    if( !( es_initialize( user_context ) && gles_load_shaders( user_context ) ) ) {
+    if( !( egl_initialize( user_context ) && gles_load_shaders( user_context ) ) ) {
         STDERR( "Failed to set up program." );
         return -1;
     }
