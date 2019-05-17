@@ -1,16 +1,12 @@
 // https://emscripten.org/docs/porting/multimedia_and_graphics/OpenGL-support.html#webgl-friendly-subset-of-opengl-es-2-0-3-0
 
-#include <EGL/egl.h>
-#include <GLES3/gl3.h>
-#include <emscripten.h>
-#include <emscripten/html5.h>
-#include <emscripten/vr.h>
+#include "vr.h"
+
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/time.h>
 #include <vector>
 
@@ -80,10 +76,10 @@ bool egl_initialize( UserContext& user_context ) {
         EGL_RED_SIZE, 5,
         EGL_GREEN_SIZE, 6,
         EGL_BLUE_SIZE, 5,
-        EGL_ALPHA_SIZE, /*( flags & ES_WINDOW_ALPHA ) ? 8 :*/ EGL_DONT_CARE,
-        EGL_DEPTH_SIZE, /*( flags & ES_WINDOW_DEPTH ) ? 8 :*/ EGL_DONT_CARE,
-        EGL_STENCIL_SIZE, /*( flags & ES_WINDOW_STENCIL ) ? 8 :*/ EGL_DONT_CARE,
-        EGL_SAMPLE_BUFFERS, /*( flags & ES_WINDOW_MULTISAMPLE ) ? 1 :*/ 0,
+        EGL_ALPHA_SIZE, EGL_DONT_CARE,   // or 8
+        EGL_DEPTH_SIZE, EGL_DONT_CARE,   // or 8
+        EGL_STENCIL_SIZE, EGL_DONT_CARE, // or 8
+        EGL_SAMPLE_BUFFERS, 0,           // or 1?
         EGL_NONE};
     EGLConfig config;
     EGLint    num_config;
@@ -279,6 +275,12 @@ bool gles_load_shaders( UserContext& user_context ) {
     return true;
 }
 
+void gles_update( UserContext& user_context ) {
+    user_context.width  = get_canvas_client_width();
+    user_context.height = get_canvas_client_height();
+    set_canvas_size( user_context.width, user_context.height );
+}
+
 void gles_draw( UserContext& user_context ) {
     const int DIMENSION                      = 3;
     const int VERTICES                       = 3;
@@ -457,6 +459,26 @@ void print_frame_data( const VRFrameData& frame_data ) {
 #undef MATARG
 }
 
+void vr_gles_update( UserContext& user_context ) {
+    gles_update( user_context );
+
+    // VREyeParameters left_param;
+    // if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeLeft, &left_param ) ) {
+    //     STDERR( "Failed to get VR left eye data." );
+    //     return;
+    // }
+    //
+    // VREyeParameters right_param;
+    // if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeRight, &right_param ) ) {
+    //     STDERR( "Failed to get VR right eye data." );
+    //     return;
+    // }
+    //
+    // set_canvas_size(
+    //     left_param.renderWidth + right_param.renderWidth,
+    //     std::max( left_param.renderHeight, right_param.renderHeight ) );
+}
+
 void vr_gles_draw( UserContext& user_context ) {
     VRFrameData frame_data;
     if( !emscripten_vr_get_frame_data( user_context.vr_display, &frame_data ) ) {
@@ -568,12 +590,6 @@ void vr_gles_draw( UserContext& user_context ) {
     }
 }
 
-void update( UserContext& user_context ) {
-    user_context.width  = get_canvas_client_width();
-    user_context.height = get_canvas_client_height();
-    set_canvas_size( user_context.width, user_context.height );
-}
-
 void vr_render_loop( void* arg ) {
     UserContext& user_context = *( reinterpret_cast<UserContext*>( arg ) );
 
@@ -623,7 +639,8 @@ void vr_present( void* arg ) {
         return;
     }
 
-    user_context.draw_func = vr_gles_draw;
+    user_context.update_func = vr_gles_update;
+    user_context.draw_func   = vr_gles_draw;
 
     cleanup.Clear();
 }

@@ -14,7 +14,7 @@ int main() {
     }
     STDOUT( "Set up program." );
 
-    user_context.update_func = update;
+    user_context.update_func = gles_update;
     user_context.draw_func   = gles_draw;
 
     if( !emscripten_vr_init( on_vr_init, nullptr ) ) {
