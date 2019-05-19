@@ -2,7 +2,12 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+TARGET="$1"
+mkdir -p $TARGET
+
 ./emscripten.sh
-cp src_web/* /var/www/html/stl/
 #rm build_emscripten/stl.js
-cp build_emscripten/* /var/www/html/stl/
+cp src_web/* $TARGET
+cp build_emscripten/* $TARGET
+cp build_fbs_js/* $TARGET
+

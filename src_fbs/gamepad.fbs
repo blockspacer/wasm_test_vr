@@ -1,0 +1,37 @@
+// Much of this is experimental as of Gamepad's initial release.
+
+table GamepadButton {
+  pressed:bool;
+  touched:bool;
+  value:double;
+}
+
+table GamepadPose {
+  hasOrientation:bool;
+  hasPosition:bool;
+
+  position:[float]; // Expect a length of 3
+  linearVelocity:[float]; // Expect a length of 3
+  linearAcceleration:[float]; // Expect a length of 3
+
+  orientation:[float]; // Expect a length of 4
+  angularVeclocity:[float]; // Expect a length of 3
+  angularAcceleration:[float]; // Expect a length of 3
+}
+
+table Gamepad {
+  id:string;
+  index:int;
+  connected:bool;
+  timestamp:double;
+  mapping:string;
+  axes:[double];
+  buttons:[GamepadButton];
+  pose:GamepadPose;
+}
+
+table GamepadList {
+  list:[Gamepad];
+}
+
+root_type GamepadList;
