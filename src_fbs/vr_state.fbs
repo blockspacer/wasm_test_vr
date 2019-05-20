@@ -1,4 +1,5 @@
-// Much of this is experimental as of Gamepad's initial release.
+// Much of this is experimental.
+namespace VR;
 
 table GamepadButton {
   pressed:bool;
@@ -6,10 +7,7 @@ table GamepadButton {
   value:double;
 }
 
-table GamepadPose {
-  hasOrientation:bool;
-  hasPosition:bool;
-
+table Pose {
   position:[float]; // Expect a length of 3
   linearVelocity:[float]; // Expect a length of 3
   linearAcceleration:[float]; // Expect a length of 3
@@ -23,15 +21,26 @@ table Gamepad {
   id:string;
   index:int;
   connected:bool;
-  timestamp:double;
   mapping:string;
   axes:[double];
   buttons:[GamepadButton];
-  pose:GamepadPose;
+  pose:Pose;
 }
 
-table GamepadList {
-  list:[Gamepad];
+table HMD {
+  leftProjectionMatrix:[float]; // 4x4
+  leftViewMatrix:[float]; // 4x4
+
+  rightProjectionMatrix:[float]; // 4x4
+  rightViewMatrix:[float]; // 4x4
+
+  pose:Pose;
 }
 
-root_type GamepadList;
+table State {
+  timestamp:double;
+  hmd:HMD;
+  gamepads:[Gamepad];
+}
+
+root_type State;

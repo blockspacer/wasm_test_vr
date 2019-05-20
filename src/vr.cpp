@@ -10,7 +10,6 @@
 #include <sys/time.h>
 #include <vector>
 
-#include "controllers.h"
 #include "finally.h"
 #include "user_context.h"
 
@@ -21,13 +20,45 @@ namespace {
     const char*  CANVAS_ID = "webgl-canvas";
     const char*  BUTTON_ID = "enter-vr";
     const double PI        = atan2( 0, -1 );
+
+    const GLfloat identity4[4 * 4] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+
+    const GLfloat identity4_rotation[4 * 4] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+    };
+
+    const GLfloat zero4_rotation[4 * 4] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+    };
+
+    template <typename Source, typename Sink>
+    void flatbuffers_vector_to_native( const flatbuffers::Vector<Source>* source, Sink* sink ) {
+        if( !source || !sink ) {
+            return;
+        }
+
+        for( int i = 0; i < source->Length(); ++i ) {
+            sink[i] = ( *source )[i];
+        }
+    }
 }
 
 // clang-format off
-EM_JS( double, get_timestamp, (), { return impl_get_timestamp(); } );
 EM_JS( int, get_canvas_client_width, (), { return impl_get_canvas_client_width(); } );
 EM_JS( int, get_canvas_client_height, (), { return impl_get_canvas_client_height(); } );
 EM_JS( void, set_canvas_size, ( int width, int height ), { impl_set_canvas_size( width, height ); } );
+EM_JS( int, get_vr_state, ( uint8_t** vr_state, int vr_display_handle ), { return impl_get_vr_state( vr_state, vr_display_handle ); } );
 // clang-format on
 
 const char* true_false( bool value ) {
@@ -54,6 +85,33 @@ void quaternion_to_gl_matrix4x4(
 
     for( int i = 0; i < 16; ++i ) {
         matrix[i] = transform[i];
+    }
+}
+
+void gl_matrix4x4_mac(
+    GLfloat*       out,
+    const GLfloat* a,
+    const GLfloat* b,
+    const GLfloat* c ) {
+    // This is written in a way that lets us use an input as an output
+    // and avoids pointer aliasing problems.
+    GLfloat temp[4 * 4 * 4];
+
+    for( int i = 0; i < 4; ++i ) {
+        for( int k = 0; k < 4; ++k ) {
+            for( int j = 0; j < 4; ++j ) {
+                temp[16 * i + 4 * j + k] = a[4 * i + j] * b[4 * j + k];
+            }
+        }
+    }
+    for( int i = 0; i < 4; ++i ) {
+        for( int k = 0; k < 4; ++k ) {
+            out[4 * i + k] = 0.0;
+            for( int j = 0; j < 4; ++j ) {
+                out[4 * i + k] += temp[16 * i + 4 * j + k];
+            }
+            out[4 * i + k] += c[4 * i + k];
+        }
     }
 }
 
@@ -325,13 +383,6 @@ void gles_draw( UserContext& user_context ) {
         0 );                        // const GLvoid * pointer (because GL_ARRAY_BUFFER is bound this is an offset into that bound buffer)
     glEnableVertexAttribArray( user_context.vec4_position );
 
-    GLfloat identity4[4 * 4] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-
     glUniformMatrix4fv(
         user_context.mat4_model, // GLint location
         1,                       // GLsizei count
@@ -357,222 +408,208 @@ void gles_draw( UserContext& user_context ) {
         VERTICES );   // GLsizei count (in number of vertices in this case)
 }
 
-void print_frame_data( const VRFrameData& frame_data ) {
-    auto flag = frame_data.pose.poseFlags;
-// clang-format off
-#define MATARG( m )                                         \
-    m[0 + 4 * 0], m[0 + 4 * 1], m[0 + 4 * 2], m[0 + 4 * 3], \
-    m[1 + 4 * 0], m[1 + 4 * 1], m[1 + 4 * 2], m[1 + 4 * 3], \
-    m[2 + 4 * 0], m[2 + 4 * 1], m[2 + 4 * 2], m[2 + 4 * 3], \
-    m[3 + 4 * 0], m[3 + 4 * 1], m[3 + 4 * 2], m[3 + 4 * 3]
-    // clang-format on
-    STDOUT( "VRFrameData {\n"
-            "  timestamp: %lf,\n"
-            "  leftProjectionMatrix: [\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "  ],\n"
-            "  leftViewMatrix: [\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "  ],\n"
-            "  rightProjectionMatrix: [\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "  ],\n"
-            "  rightViewMatrix: [\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "    [%+.6f, %+.6f, %+.6f, %+.6f],\n"
-            "  ],\n"
-            "  pose: {",
-            frame_data.timestamp,
-            MATARG( frame_data.leftProjectionMatrix ),
-            MATARG( frame_data.leftViewMatrix ),
-            MATARG( frame_data.rightProjectionMatrix ),
-            MATARG( frame_data.rightViewMatrix ) );
-    if( flag & VR_POSE_POSITION ) {
-        printf( "    position: {\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.position.x,
-                frame_data.pose.position.y,
-                frame_data.pose.position.z );
+int pose_dof( const VR::Pose* pose ) {
+    // -1DoF is indeterminant.
+    // 0DoF is fixed in space (i.e. a screen).
+    // 3Dof can point around but not move (like Daydream or trackers with position lock lost).
+    // 6DoF can point around and move (like HTC Vive or trackers with position lock).
+
+    if( !( pose ) ) {
+        return -1;
     }
-    if( flag & VR_POSE_LINEAR_VELOCITY ) {
-        printf( "    linearVelocity: {\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.linearVelocity.x,
-                frame_data.pose.linearVelocity.y,
-                frame_data.pose.linearVelocity.z );
+
+    if( !( pose->position() ) ) {
+        return 0;
     }
-    if( flag & VR_POSE_LINEAR_ACCELERATION ) {
-        printf( "    linearAcceleration: {\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.linearAcceleration.x,
-                frame_data.pose.linearAcceleration.y,
-                frame_data.pose.linearAcceleration.z );
+
+    if( !( pose->orientation() ) ) {
+        return 3;
     }
-    if( flag & VR_POSE_ORIENTATION ) {
-        printf( "    orientation: {\n"
-                "      w: %+.6f,\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.orientation.w,
-                frame_data.pose.orientation.x,
-                frame_data.pose.orientation.y,
-                frame_data.pose.orientation.z );
-    }
-    if( flag & VR_POSE_ANGULAR_VELOCITY ) {
-        printf( "    angularVelocity: {\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.angularVelocity.x,
-                frame_data.pose.angularVelocity.y,
-                frame_data.pose.angularVelocity.z );
-    }
-    if( flag & VR_POSE_ANGULAR_ACCELERATION ) {
-        printf( "    angularAcceleration: {\n"
-                "      x: %+.6f,\n"
-                "      y: %+.6f,\n"
-                "      z: %+.6f,\n"
-                "    },\n",
-                frame_data.pose.angularAcceleration.x,
-                frame_data.pose.angularAcceleration.y,
-                frame_data.pose.angularAcceleration.z );
-    }
-    printf( "  }\n"
-            "}\n" );
-#undef MATARG
+
+    return 6;
 }
 
-void print_flatbuffers_float_vector( const flatbuffers::Vector<float>* float_vector ) {
-    for( const float i : *float_vector ) {
-        printf( "%lf, ", i );
+void print_flatbuffers_float_matrix4xN( const flatbuffers::Vector<float>* matrix, int space_depth ) {
+    if( !matrix ) {
+        return;
     }
-}
 
-void print_flatbuffers_double_vector( const flatbuffers::Vector<double>* double_vector ) {
-    for( const double i : *double_vector ) {
-        printf( "%lf, ", i );
-    }
-}
-
-void print_GamepadList( const GamepadList* ptr_gamepad_list ) {
-    if( ptr_gamepad_list ) {
-        const GamepadList& gamepad_list = *ptr_gamepad_list;
-
-        STDOUT( "GamepadList [" );
-        for( const Gamepad* ptr_gamepad : *( gamepad_list.list() ) ) {
-            if( ptr_gamepad ) {
-                const Gamepad& gamepad = *ptr_gamepad;
-
-                printf(
-                    "  Gamepad {\n"
-                    "    id:        \"%s\",\n"
-                    "    index:     %d,\n"
-                    "    connected: %s,\n"
-                    "    timestamp: %lf,\n"
-                    "    mapping:   \"%s\",\n"
-                    "    axes:      [",
-                    gamepad.id()->c_str(),
-                    gamepad.index(),
-                    true_false( gamepad.connected() ),
-                    gamepad.timestamp(),
-                    gamepad.mapping()->c_str() );
-                print_flatbuffers_double_vector( gamepad.axes() );
-                printf( "],\n" );
-                if( gamepad.buttons() ) {
-                    const auto& buttons = *( gamepad.buttons() ); // This type is a bit weird.
-                    printf( "    buttons:   [\n" );
-                    for( const GamepadButton* ptr_button : buttons ) {
-                        if( ptr_button ) {
-                            const GamepadButton& button = *ptr_button;
-                            printf(
-                                "      GamepadButton {\n"
-                                "        pressed: %s,\n"
-                                "        touched: %s,\n"
-                                "        value:   %lf,\n"
-                                "      },\n",
-                                true_false( button.pressed() ),
-                                true_false( button.touched() ),
-                                button.value() );
-                        }
-                    }
-                    printf( "    ],\n" );
-                }
-
-                if( gamepad.pose() ) {
-                    const GamepadPose& pose = *( gamepad.pose() );
-
-                    printf(
-                        "    pose: {\n"
-                        "      hasOrientation:      %s,\n"
-                        "      hasPosition:         %s,\n",
-                        true_false( pose.hasOrientation() ),
-                        true_false( pose.hasPosition() ) );
-
-                    if( pose.position() ) {
-                        printf( "      position:            [" );
-                        print_flatbuffers_float_vector( pose.position() );
-                        printf( "],\n" );
-                    }
-
-                    if( pose.linearVelocity() ) {
-                        printf( "      linearVelocity:      [" );
-                        print_flatbuffers_float_vector( pose.linearVelocity() );
-                        printf( "],\n" );
-                    }
-
-                    if( pose.linearAcceleration() ) {
-                        printf( "      linearAcceleration:  [" );
-                        print_flatbuffers_float_vector( pose.linearAcceleration() );
-                        printf( "],\n" );
-                    }
-
-                    if( pose.orientation() ) {
-                        printf( "      orientation:         [" );
-                        print_flatbuffers_float_vector( pose.orientation() );
-                        printf( "],\n" );
-                    }
-
-                    if( pose.angularVeclocity() ) {
-                        printf( "      angularVeclocity:    [" );
-                        print_flatbuffers_float_vector( pose.angularVeclocity() );
-                        printf( "],\n" );
-                    }
-
-                    if( pose.angularAcceleration() ) {
-                        printf( "      angularAcceleration: [" );
-                        print_flatbuffers_float_vector( pose.angularAcceleration() );
-                        printf( "],\n" );
-                    }
-
-                    printf( "    },\n" );
-                }
-                printf( "  },\n" );
+    int rollover = 0;
+    for( const float i : *matrix ) {
+        if( !( rollover % 4 ) ) {
+            for( int j = 0; j < space_depth; ++j ) {
+                printf( " " );
             }
         }
-        printf( "]\n" );
+        printf( "%+6f, ", i );
+        if( !( ( ++rollover ) % 4 ) ) {
+            printf( "\n" );
+        }
+    }
+}
+
+void print_flatbuffers_float_vector( const flatbuffers::Vector<float>* vector ) {
+    if( !vector ) {
+        return;
+    }
+
+    for( const float i : *vector ) {
+        printf( "%f, ", i );
+    }
+}
+
+void print_flatbuffers_double_vector( const flatbuffers::Vector<double>* vector ) {
+    if( !vector ) {
+        return;
+    }
+
+    for( const double i : *vector ) {
+        printf( "%lf, ", i );
+    }
+}
+
+void print_vr_state( const VRState& state ) {
+    const VR::State* root = state.view();
+    if( !root ) {
+        STDOUT( "null" );
+    } else {
+        STDOUT( "State {" );
+        printf( "  timestamp: %lf,\n", root->timestamp() );
+        if( root->hmd() ) {
+            printf( "  hmd: HMD {\n" );
+            if( root->hmd()->leftProjectionMatrix() ) {
+                printf( "    leftProjectionMatrix:  [\n" );
+                print_flatbuffers_float_matrix4xN( root->hmd()->leftProjectionMatrix(), 6 );
+                printf( "    ],\n" );
+            }
+            if( root->hmd()->leftViewMatrix() ) {
+                printf( "    leftViewMatrix:        [\n" );
+                print_flatbuffers_float_matrix4xN( root->hmd()->leftViewMatrix(), 6 );
+                printf( "    ],\n" );
+            }
+            if( root->hmd()->rightProjectionMatrix() ) {
+                printf( "    rightProjectionMatrix: [\n" );
+                print_flatbuffers_float_matrix4xN( root->hmd()->rightProjectionMatrix(), 6 );
+                printf( "    ],\n" );
+            }
+            if( root->hmd()->rightViewMatrix() ) {
+                printf( "    rightViewMatrix:       [\n" );
+                print_flatbuffers_float_matrix4xN( root->hmd()->rightViewMatrix(), 6 );
+                printf( "    ],\n" );
+            }
+            if( root->hmd()->pose() ) {
+                const VR::Pose& pose = *( root->hmd()->pose() );
+                printf( "    pose: {\n" );
+                if( pose.position() ) {
+                    printf( "      position:            [" );
+                    print_flatbuffers_float_vector( pose.position() );
+                    printf( "],\n" );
+                }
+                if( pose.linearVelocity() ) {
+                    printf( "      linearVelocity:      [" );
+                    print_flatbuffers_float_vector( pose.linearVelocity() );
+                    printf( "],\n" );
+                }
+                if( pose.linearAcceleration() ) {
+                    printf( "      linearAcceleration:  [" );
+                    print_flatbuffers_float_vector( pose.linearAcceleration() );
+                    printf( "],\n" );
+                }
+                if( pose.orientation() ) {
+                    printf( "      orientation:         [" );
+                    print_flatbuffers_float_vector( pose.orientation() );
+                    printf( "],\n" );
+                }
+                if( pose.angularVeclocity() ) {
+                    printf( "      angularVeclocity:    [" );
+                    print_flatbuffers_float_vector( pose.angularVeclocity() );
+                    printf( "],\n" );
+                }
+                if( pose.angularAcceleration() ) {
+                    printf( "      angularAcceleration: [" );
+                    print_flatbuffers_float_vector( pose.angularAcceleration() );
+                    printf( "],\n" );
+                }
+                printf( "    },\n" );
+            }
+            printf( "  }\n" );
+        }
+        if( root->gamepads() ) {
+            printf( "  gamepads: [\n" );
+
+            for( const VR::Gamepad* ptr_gamepad : *( root->gamepads() ) ) {
+                if( !ptr_gamepad ) {
+                    printf( "    null,\n" );
+                } else {
+                    const VR::Gamepad& gamepad = *ptr_gamepad;
+                    printf( "    Gamepad {\n" );
+                    printf( "      id:        \"%s\",\n", gamepad.id()->c_str() );
+                    printf( "      index:     %d,\n", gamepad.index() );
+                    printf( "      connected: %s,\n", true_false( gamepad.connected() ) );
+                    printf( "      mapping:   \"%s\",\n", gamepad.mapping()->c_str() );
+                    if( gamepad.axes() ) {
+                        printf( "      axes:      [" );
+                        print_flatbuffers_double_vector( gamepad.axes() );
+                        printf( "],\n" );
+                    }
+                    if( gamepad.buttons() ) {
+                        printf( "      buttons:   [\n" );
+                        for( const VR::GamepadButton* ptr_button : *( gamepad.buttons() ) ) {
+                            if( !ptr_button ) {
+                                printf( "        null,\n" );
+                            } else {
+                                const VR::GamepadButton& button = *ptr_button;
+                                printf( "        GamepadButton {\n" );
+                                printf( "          pressed: %s,\n", true_false( button.pressed() ) );
+                                printf( "          touched: %s,\n", true_false( button.touched() ) );
+                                printf( "          value:   %lf,\n", button.value() );
+                                printf( "        },\n" );
+                            }
+                        }
+                        printf( "      ],\n" );
+                    }
+                    if( gamepad.pose() ) {
+                        const VR::Pose& pose = *( gamepad.pose() );
+                        printf( "      pose: {\n" );
+                        if( pose.position() ) {
+                            printf( "        position:            [" );
+                            print_flatbuffers_float_vector( pose.position() );
+                            printf( "],\n" );
+                        }
+                        if( pose.linearVelocity() ) {
+                            printf( "        linearVelocity:      [" );
+                            print_flatbuffers_float_vector( pose.linearVelocity() );
+                            printf( "],\n" );
+                        }
+                        if( pose.linearAcceleration() ) {
+                            printf( "        linearAcceleration:  [" );
+                            print_flatbuffers_float_vector( pose.linearAcceleration() );
+                            printf( "],\n" );
+                        }
+                        if( pose.orientation() ) {
+                            printf( "        orientation:         [" );
+                            print_flatbuffers_float_vector( pose.orientation() );
+                            printf( "],\n" );
+                        }
+                        if( pose.angularVeclocity() ) {
+                            printf( "        angularVeclocity:    [" );
+                            print_flatbuffers_float_vector( pose.angularVeclocity() );
+                            printf( "],\n" );
+                        }
+                        if( pose.angularAcceleration() ) {
+                            printf( "        angularAcceleration: [" );
+                            print_flatbuffers_float_vector( pose.angularAcceleration() );
+                            printf( "],\n" );
+                        }
+                        printf( "      },\n" );
+                    }
+                    printf( "    },\n" );
+                }
+            }
+
+            printf( "  ]\n" );
+        }
+        printf( "}\n" );
     }
 }
 
@@ -596,26 +633,46 @@ void vr_gles_update( UserContext& user_context ) {
     //     std::max( left_param.renderHeight, right_param.renderHeight ) );
 }
 
-void vr_gles_draw( UserContext& user_context ) {
-    VRFrameData frame_data;
-    if( !emscripten_vr_get_frame_data( user_context.vr_display, &frame_data ) ) {
-        STDERR( "Failed to get VR frame data." );
-        return;
+bool vr_state_get( VRState& vr_state, UserContext& user_context ) {
+    if( !VRState::slab(
+            &vr_state,
+            [&]( uint8_t** ptr_slab ) -> int {
+                return get_vr_state( ptr_slab, user_context.vr_display );
+            },
+            VR::VerifyStateBuffer,
+            VR::GetState ) ) {
+        STDERR( "Failed to get VRState." );
+        return false;
     }
 
-    // Because some platforms don't actually fill in VRFrameData.timestamp we set it ourselves.
-    frame_data.timestamp = get_timestamp();
+    return true;
+}
 
-    Controllers controllers;
-    if( !Controllers::get_controllers( &controllers ) ) {
-        STDERR( "Failed to get GamepadList." );
+void vr_gles_draw( UserContext& user_context ) {
+    VRState vr_state;
+    if( !vr_state_get( vr_state, user_context ) ) {
+        STDERR( "Failed to get VR state." );
+        return;
     }
 
     static int print_limit_counter = 0;
     if( print_limit_counter++ < 10 ) {
-        print_frame_data( frame_data );
-        print_GamepadList( controllers.gamepad_list() );
+        print_vr_state( vr_state );
     }
+
+    const VR::State* vr_state_view = vr_state.view();
+    if( !vr_state_view ) {
+        STDERR( "No content for VR state view." );
+        return;
+    }
+    const VR::State& state = *vr_state_view;
+
+    const VR::HMD* ptr_hmd = state.hmd();
+    if( !ptr_hmd ) {
+        STDERR( "No HMD defined in VR state." );
+        return;
+    }
+    const VR::HMD& hmd = *ptr_hmd;
 
     {
         // Get a list of buffers to bind shader attributes to.
@@ -634,7 +691,7 @@ void vr_gles_draw( UserContext& user_context ) {
         glUseProgram( user_context.program );
 
         // Set model orientation.
-        const double time_s = frame_data.timestamp / 1000.0;
+        const double time_s = state.timestamp() / 1000.0;
         const double q      = PI * time_s / 2.0;
 #define F( x ) static_cast<float>( x )
         // clang-format off
@@ -651,28 +708,30 @@ void vr_gles_draw( UserContext& user_context ) {
         GLfloat model_matrix_rcon[4 * 4];
 
         // Pull in left and right controller matrices.
-        if( controllers.gamepad_list() ) {
-            for( const auto* ptr_gamepad : *( controllers.gamepad_list()->list() ) ) {
+        if( state.gamepads() ) {
+            for( const auto* ptr_gamepad : *( state.gamepads() ) ) {
                 if( ptr_gamepad ) {
                     int index = ptr_gamepad->index();
                     if( !( ( 0 <= index ) && ( index < 2 ) ) ) {
                         continue;
                     }
 
-                    const GamepadPose* ptr_pose = ptr_gamepad->pose();
+                    const VR::Pose* ptr_pose = ptr_gamepad->pose();
                     if( ptr_pose ) {
-                        const auto* ptr_position    = ptr_pose->position();
-                        const auto* ptr_orientation = ptr_pose->orientation();
-                        if(
-                            !( ptr_position ) ||
-                            !( ptr_position->Length() == 3 ) ||
-                            !( ptr_orientation ) ||
-                            !( ptr_orientation->Length() == 4 ) ) {
-                            continue;
+                        bool six_dof = false;
+
+                        const auto* ptr_position     = ptr_pose->position();
+                        double      draw_position[3] = {0.0, 0.0, 0.0};
+                        if( ptr_position && ( ptr_position->Length() == 3 ) ) {
+                            flatbuffers_vector_to_native( ptr_position, draw_position );
+                            six_dof = true;
                         }
 
-                        const auto& position    = *ptr_position;
-                        const auto& orientation = *ptr_orientation;
+                        const auto* ptr_orientation     = ptr_pose->orientation();
+                        double      draw_orientation[4] = {0.0, 0.0, 0.0, 1.0}; // This API uses the wrong quaternion ordering.
+                        if( ptr_orientation && ( ptr_orientation->Length() == 4 ) ) {
+                            flatbuffers_vector_to_native( ptr_orientation, draw_orientation );
+                        }
 
                         GLfloat* matrix = nullptr;
                         switch( index ) {
@@ -687,14 +746,29 @@ void vr_gles_draw( UserContext& user_context ) {
                         }
                         if( matrix ) {
                             quaternion_to_gl_matrix4x4(
-                                orientation[3], // This API uses the wrong quaternion ordering.
-                                orientation[0],
-                                orientation[1],
-                                orientation[2],
-                                position[0],
-                                position[1],
-                                position[2],
+                                draw_orientation[3], // This API uses the wrong quaternion ordering.
+                                draw_orientation[0],
+                                draw_orientation[1],
+                                draw_orientation[2],
+                                draw_position[0],
+                                draw_position[1],
+                                draw_position[2],
                                 matrix );
+
+                            // Add an offset to non-6DoF controllers.
+                            if( !six_dof ) {
+                                GLfloat offset[4 * 4] = {
+                                    0.0f, 0.0f, 0.0f, 0.0f,
+                                    0.0f, 0.0f, 0.0f, 0.0f,
+                                    0.0f, 0.0f, 0.0f, 1.0f,
+                                    0.0f, 0.0f, 0.0f, 0.0f,
+                                };
+                                gl_matrix4x4_mac(
+                                    matrix,
+                                    identity4,
+                                    matrix,
+                                    offset );
+                            }
                         }
                     }
                 }
@@ -790,31 +864,40 @@ void vr_gles_draw( UserContext& user_context ) {
         auto width_l = user_context.width / 2;
         auto width_r = user_context.width - width_l;
 
+        GLfloat leftViewMatrix[16];
+        GLfloat leftProjectionMatrix[16];
+        GLfloat rightViewMatrix[16];
+        GLfloat rightProjectionMatrix[16];
+        flatbuffers_vector_to_native( hmd.leftViewMatrix(), leftViewMatrix );
+        flatbuffers_vector_to_native( hmd.leftProjectionMatrix(), leftProjectionMatrix );
+        flatbuffers_vector_to_native( hmd.rightViewMatrix(), rightViewMatrix );
+        flatbuffers_vector_to_native( hmd.rightProjectionMatrix(), rightProjectionMatrix );
+
         // Draw left viewport.
         glUniformMatrix4fv(
-            user_context.mat4_view,      // GLint location
-            1,                           // GLsizei count
-            GL_FALSE,                    // GLboolean transpose
-            frame_data.leftViewMatrix ); // const GLfloat* value
+            user_context.mat4_view, // GLint location
+            1,                      // GLsizei count
+            GL_FALSE,               // GLboolean transpose
+            leftViewMatrix );       // const GLfloat* value
         glUniformMatrix4fv(
-            user_context.mat4_projection,      // GLint location
-            1,                                 // GLsizei count
-            GL_FALSE,                          // GLboolean transpose
-            frame_data.leftProjectionMatrix ); // const GLfloat* value
+            user_context.mat4_projection, // GLint location
+            1,                            // GLsizei count
+            GL_FALSE,                     // GLboolean transpose
+            leftProjectionMatrix );       // const GLfloat* value
         glViewport( 0, 0, width_l, user_context.height );
         draw_scene();
 
         // Draw right viewport.
         glUniformMatrix4fv(
-            user_context.mat4_view,       // GLint location
+            user_context.mat4_view, // GLint location
+            1,                      // GLsizei count
+            GL_FALSE,               // GLboolean transpose
+            rightViewMatrix );      // const GLfloat* value
+        glUniformMatrix4fv(
+            user_context.mat4_projection, // GLint location
             1,                            // GLsizei count
             GL_FALSE,                     // GLboolean transpose
-            frame_data.rightViewMatrix ); // const GLfloat* value
-        glUniformMatrix4fv(
-            user_context.mat4_projection,       // GLint location
-            1,                                  // GLsizei count
-            GL_FALSE,                           // GLboolean transpose
-            frame_data.rightProjectionMatrix ); // const GLfloat* value
+            rightProjectionMatrix );      // const GLfloat* value
         glViewport( width_l, 0, width_r, user_context.height );
         draw_scene();
     }
