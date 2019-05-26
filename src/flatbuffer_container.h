@@ -1,5 +1,5 @@
-#ifndef FLATBUFFER_CONTAINER_H
-#define FLATBUFFER_CONTAINER_H
+#ifndef WASMVR_FLATBUFFER_CONTAINER_H
+#define WASMVR_FLATBUFFER_CONTAINER_H
 
 #include <functional>
 
@@ -66,4 +66,4 @@ const T* FlatbufferContainer<T>::view() const {
     return view_;
 }
 
-#endif // FLATBUFFER_CONTAINER_H
+#endif // WASMVR_FLATBUFFER_CONTAINER_H

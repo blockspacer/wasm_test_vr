@@ -1,5 +1,5 @@
-#ifndef USER_CONTEXT_H
-#define USER_CONTEXT_H
+#ifndef WASMVR_USER_CONTEXT_H
+#define WASMVR_USER_CONTEXT_H
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -31,4 +31,4 @@ public:
     UserContext();
 };
 
-#endif // USER_CONTEXT_H
+#endif // WASMVR_USER_CONTEXT_H

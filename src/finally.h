@@ -1,5 +1,5 @@
-#ifndef FINALLY_H
-#define FINALLY_H
+#ifndef WASMVR_FINALLY_H
+#define WASMVR_FINALLY_H
 
 #include <functional>
 
@@ -13,4 +13,4 @@ private:
     std::function<void( void )> functor_;
 };
 
-#endif // FINALLY_H
+#endif // WASMVR_FINALLY_H
