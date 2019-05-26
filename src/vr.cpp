@@ -106,11 +106,10 @@ void gl_matrix4x4_mac(
     }
     for( int i = 0; i < 4; ++i ) {
         for( int k = 0; k < 4; ++k ) {
-            out[4 * i + k] = 0.0;
+            out[4 * i + k] = c[4 * i + k];
             for( int j = 0; j < 4; ++j ) {
                 out[4 * i + k] += temp[16 * i + 4 * j + k];
             }
-            out[4 * i + k] += c[4 * i + k];
         }
     }
 }
@@ -614,23 +613,21 @@ void print_vr_state( const VRState& state ) {
 }
 
 void vr_gles_update( UserContext& user_context ) {
-    gles_update( user_context );
+    VREyeParameters left_param;
+    if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeLeft, &left_param ) ) {
+        STDERR( "Failed to get VR left eye data." );
+        return;
+    }
 
-    // VREyeParameters left_param;
-    // if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeLeft, &left_param ) ) {
-    //     STDERR( "Failed to get VR left eye data." );
-    //     return;
-    // }
-    //
-    // VREyeParameters right_param;
-    // if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeRight, &right_param ) ) {
-    //     STDERR( "Failed to get VR right eye data." );
-    //     return;
-    // }
-    //
-    // set_canvas_size(
-    //     left_param.renderWidth + right_param.renderWidth,
-    //     std::max( left_param.renderHeight, right_param.renderHeight ) );
+    VREyeParameters right_param;
+    if( !emscripten_vr_get_eye_parameters( user_context.vr_display, VREyeRight, &right_param ) ) {
+        STDERR( "Failed to get VR right eye data." );
+        return;
+    }
+
+    user_context.width  = left_param.renderWidth + right_param.renderWidth;
+    user_context.height = std::max( left_param.renderHeight, right_param.renderHeight );
+    set_canvas_size( user_context.width, user_context.height );
 }
 
 bool vr_state_get( VRState& vr_state, UserContext& user_context ) {
